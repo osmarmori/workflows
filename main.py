@@ -8,7 +8,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import yfinance as yf
-
+print("Script iniciado...")
 
 # =========================================================
 # CONFIGURAÇÃO DOS ATIVOS
@@ -667,6 +667,7 @@ def enviar_email(assunto, corpo_html):
 # MAIN
 # =========================================================
 def main():
+    print("Entrou no main()")
     resultados = []
 
     for ativo in ATIVOS:
@@ -689,4 +690,5 @@ def main():
 
 
 if __name__ == "__main__":
+    print("Executando script...")
     main()
