@@ -31,4 +31,8 @@ jobs:
           EMAIL_REMETENTE: ${{ secrets.EMAIL_REMETENTE }}
           SENHA_APP: ${{ secrets.SENHA_APP }}
           EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
-        run: python main.py
+        run: |
+          echo "Arquivos no diretório:"
+          ls -la
+          echo "Executando main.py..."
+          python main.py
