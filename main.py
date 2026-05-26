@@ -668,14 +668,6 @@ def enviar_email(assunto, corpo_html):
 # =========================================================
 def main():
     print("Entrou no main()")
-     
-    enviar_email(
-        "Teste Radar GitHub",
-        "<h1>Teste OK</h1><p>GitHub Actions executou e enviou email.</p>"
-    )
-
-    print("Email de teste enviado.")
-    return
     
     resultados = []
 
