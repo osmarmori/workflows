@@ -51,10 +51,11 @@ ATIVOS = [
     # Temático
     {"ticker": "REMX", "nome": "ETF Rare Earths", "grupo": "Temático"},
 ]
+
+
 # =========================================================
 # SUA CARTEIRA
 # =========================================================
-
 CARTEIRA_EUA = {
     "SCHD",
     "MSFT",
@@ -251,9 +252,9 @@ def limpar_texto(texto: str) -> str:
     return texto
 
 
-def coletar_noticias(ticker: str, limite: int = 3):
+def coletar_noticias(ticker: str, limite: int = 2):
     """
-    Tenta coletar manchetes via yfinance.
+    Tenta coletar manchetes via yfinance/Yahoo Finance.
     Nem todos os tickers retornam notícias de forma consistente.
     """
     noticias_formatadas = []
@@ -285,13 +286,11 @@ def coletar_noticias(ticker: str, limite: int = 3):
                 if palavra in texto_analise:
                     sentimento -= 1
 
-            linha = titulo
-            if publisher:
-                linha += f" ({publisher})"
-            if link:
-                linha += f" - {link}"
-
-            noticias_formatadas.append(linha)
+            noticias_formatadas.append({
+                "titulo": titulo,
+                "fonte": publisher,
+                "link": link,
+            })
 
     except Exception:
         return [], 0
@@ -377,21 +376,24 @@ def analisar_ativo(ativo):
 
         close = df["Close"].dropna()
 
-        if len(close) < 200:
+        # Para montar o e-mail diário, bastam dois fechamentos.
+        # Os indicadores adicionais ficam como n/d quando não há histórico suficiente.
+        if len(close) < 2:
             return None
 
         preco = safe_float(close.iloc[-1])
-        preco_anterior = safe_float(close.iloc[-2]) if len(close) >= 2 else None
-        media30 = safe_float(close.tail(30).mean())
-        std30 = safe_float(close.tail(30).std())
-        ma50 = safe_float(close.rolling(50).mean().iloc[-1])
-        ma200 = safe_float(close.rolling(200).mean().iloc[-1])
-        max90 = safe_float(close.tail(90).max())
-        rsi = safe_float(calcular_rsi(close, 14).iloc[-1])
+        preco_anterior = safe_float(close.iloc[-2])
 
-        queda_dia = None
+        media30 = safe_float(close.tail(30).mean()) if len(close) >= 30 else None
+        std30 = safe_float(close.tail(30).std()) if len(close) >= 30 else None
+        ma50 = safe_float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else None
+        ma200 = safe_float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else None
+        max90 = safe_float(close.tail(90).max()) if len(close) >= 90 else None
+        rsi = safe_float(calcular_rsi(close, 14).iloc[-1]) if len(close) >= 15 else None
+
+        variacao_fechamento = None
         if preco is not None and preco_anterior not in (None, 0):
-            queda_dia = ((preco / preco_anterior) - 1) * 100
+            variacao_fechamento = ((preco / preco_anterior) - 1) * 100
 
         dist_media30 = None
         if preco is not None and media30 not in (None, 0):
@@ -405,7 +407,7 @@ def analisar_ativo(ativo):
         if preco is not None and max90 not in (None, 0):
             drawdown = (preco / max90) - 1
 
-        noticias, sentimento_noticias = coletar_noticias(ticker, limite=3)
+        noticias, sentimento_noticias = coletar_noticias(ticker, limite=2)
 
         if grupo == "Cripto":
             nota_z = normalizar_z_cripto(zscore)
@@ -440,7 +442,8 @@ def analisar_ativo(ativo):
             "nome": nome,
             "grupo": grupo,
             "preco": preco,
-            "queda_dia": queda_dia,
+            "preco_anterior": preco_anterior,
+            "variacao_fechamento": variacao_fechamento,
             "dist_media30": dist_media30,
             "zscore": zscore,
             "rsi": rsi,
@@ -471,7 +474,22 @@ def fmt_num(v, casas=2):
 def fmt_pct(v, casas=2):
     if v is None:
         return "n/d"
-    return f"{v:.{casas}f}%"
+    sinal = "+" if v > 0 else ""
+    return f"{sinal}{v:.{casas}f}%"
+
+
+def fmt_preco(v, grupo):
+    if v is None:
+        return "n/d"
+
+    # Brasil em R$; EUA/Temático/Cripto em US$
+    prefixo = "R$" if grupo == "Brasil" else "US$"
+    valor = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{prefixo} {valor}"
+
+
+def html_escape(value):
+    return html.escape(str(value)) if value is not None else ""
 
 
 def montar_linha_titulo(item):
@@ -479,9 +497,77 @@ def montar_linha_titulo(item):
     return f"{estrela}{item['ticker']} ({item['nome']})"
 
 
-def top_por_grupo(resultados, grupo, limite=3):
-    grupo_filtrado = [r for r in resultados if r["grupo"] == grupo]
-    return grupo_filtrado[:limite]
+def formatar_noticias_html(noticias):
+    if not noticias:
+        return "n/d"
+
+    partes = []
+    for noticia in noticias:
+        titulo = html_escape(noticia.get("titulo", ""))
+        fonte = html_escape(noticia.get("fonte", ""))
+        link = noticia.get("link", "")
+
+        if not titulo:
+            continue
+
+        if link:
+            item = f'<a href="{html_escape(link)}">{titulo}</a>'
+        else:
+            item = titulo
+
+        if fonte:
+            item += f" <span style='color:#666;'>({fonte})</span>"
+
+        partes.append(item)
+
+    return "<br>".join(partes) if partes else "n/d"
+
+
+def montar_tabela_html(titulo, itens):
+    linhas = []
+    linhas.append(f"<h2>{html_escape(titulo)}</h2>")
+
+    if not itens:
+        linhas.append("<p>Sem dados disponíveis.</p>")
+        return "\n".join(linhas)
+
+    linhas.append("""
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; font-family:Arial, sans-serif; font-size:13px;">
+      <thead>
+        <tr style="background-color:#f2f2f2;">
+          <th align="left">Ativo</th>
+          <th align="right">Fechamento atual</th>
+          <th align="right">Var. vs fechamento anterior</th>
+          <th align="left">Classificação</th>
+          <th align="left">Notícias relevantes</th>
+        </tr>
+      </thead>
+      <tbody>
+    """)
+
+    for item in itens:
+        variacao = item["variacao_fechamento"]
+        if variacao is None:
+            variacao_html = "n/d"
+        else:
+            cor = "#0a7d28" if variacao >= 0 else "#b00020"
+            variacao_html = f"<span style='color:{cor};'>{html_escape(fmt_pct(variacao))}</span>"
+
+        linhas.append(f"""
+        <tr>
+          <td>{html_escape(montar_linha_titulo(item))}</td>
+          <td align="right">{html_escape(fmt_preco(item["preco"], item["grupo"]))}</td>
+          <td align="right">{variacao_html}</td>
+          <td>{html_escape(item["classificacao"])}</td>
+          <td>{formatar_noticias_html(item["noticias"])}</td>
+        </tr>
+        """)
+
+    linhas.append("""
+      </tbody>
+    </table>
+    """)
+    return "\n".join(linhas)
 
 
 # =========================================================
@@ -490,60 +576,84 @@ def top_por_grupo(resultados, grupo, limite=3):
 def montar_email(resultados):
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    linhas = []
-    linhas.append("Radar Inteligente - Oportunidades (Compra Forte)")
-    linhas.append(f"Atualizado em: {agora}")
-    linhas.append("")
-    linhas.append("⭐ = ativo que já está na sua carteira")
-    linhas.append("")
+    brasil = sorted(
+        [r for r in resultados if r["grupo"] == "Brasil"],
+        key=lambda x: x["ticker"]
+    )
 
-    # filtrar somente compra forte
-    fortes = [r for r in resultados if r["classificacao"] == "Compra forte"]
+    globais = sorted(
+        [r for r in resultados if r["grupo"] in {"EUA", "Cripto", "Temático"}],
+        key=lambda x: (x["grupo"], x["ticker"])
+    )
 
-    if not fortes:
-        linhas.append("Nenhum ativo com sinal de COMPRA FORTE hoje.")
-        linhas.append("")
-        linhas.append("Sugestão: aguardar melhores assimetrias.")
-        return "\n".join(linhas)
+    fortes = sorted(
+        [r for r in resultados if r["classificacao"] == "Compra forte"],
+        key=lambda x: x["score"],
+        reverse=True
+    )
 
-    # ordenar por score
-    fortes.sort(key=lambda x: x["score"], reverse=True)
+    if fortes:
+        resumo_oportunidades = "<ul>"
+        for item in fortes:
+            resumo_oportunidades += (
+                f"<li><strong>{html_escape(montar_linha_titulo(item))}</strong> "
+                f"| Score {fmt_num(item['score'], 1)} "
+                f"| {html_escape(item['motivos'])}</li>"
+            )
+        resumo_oportunidades += "</ul>"
+    else:
+        resumo_oportunidades = (
+            "<p>Nenhum ativo foi classificado como <strong>Compra Forte</strong> nesta execução. "
+            "O relatório diário segue abaixo para acompanhamento dos preços e notícias.</p>"
+        )
 
-    linhas.append("=== Oportunidades do dia ===")
+    corpo_html = f"""
+    <html>
+      <body style="font-family:Arial, sans-serif; color:#222;">
+        <h1>Radar Diário de Investimentos</h1>
 
-    for item in fortes:
-        estrela = "⭐ " if item["em_carteira"] else ""
-        linhas.append(f"{estrela}{item['ticker']} ({item['nome']})")
-        linhas.append(f"Score: {item['score']:.1f}")
-        linhas.append(f"Queda do dia: {item['queda_dia']:.2f}%")
-        linhas.append(f"Motivos: {item['motivos']}")
+        <p><strong>Atualizado em:</strong> {html_escape(agora)}</p>
+        <p><strong>Legenda:</strong> ⭐ = ativo que já está na sua carteira.</p>
 
-        if item["noticias"]:
-            linhas.append("Notícias:")
-            for n in item["noticias"]:
-                linhas.append(f"- {n}")
-        else:
-            linhas.append("Notícias: n/d")
+        <h2>Resumo de oportunidades</h2>
+        {resumo_oportunidades}
 
-        linhas.append("")
+        {montar_tabela_html("Ativos Brasil", brasil)}
 
-    linhas.append("=== Leitura rápida ===")
-    linhas.append("Compra forte = queda relevante + indicadores estatísticos favoráveis")
-    linhas.append("Normalmente representa distorções de curto prazo com melhor assimetria")
+        <br>
 
-    return "\n".join(linhas)
+        {montar_tabela_html("Ativos Globais", globais)}
+
+        <br>
+
+        <h2>Glossário rápido</h2>
+        <ul>
+          <li><strong>Fechamento atual:</strong> último fechamento disponível via Yahoo Finance/yfinance.</li>
+          <li><strong>Var. vs fechamento anterior:</strong> variação percentual entre o fechamento atual e o fechamento imediatamente anterior.</li>
+          <li><strong>Classificação:</strong> leitura automática do modelo estatístico do radar.</li>
+          <li><strong>Notícias relevantes:</strong> manchetes recentes disponíveis via yfinance/Yahoo Finance. A cobertura pode variar por ativo.</li>
+        </ul>
+
+        <p style="font-size:12px; color:#666;">
+          Observação: este radar é uma ferramenta de monitoramento e não representa recomendação individual de investimento.
+        </p>
+      </body>
+    </html>
+    """
+
+    return corpo_html
 
 
 # =========================================================
 # ENVIO DE E-MAIL
 # =========================================================
-def enviar_email(assunto, corpo):
+def enviar_email(assunto, corpo_html):
     if not EMAIL_REMETENTE or not SENHA_APP or not EMAIL_DESTINO:
         raise ValueError(
             "Faltam EMAIL_REMETENTE, SENHA_APP ou EMAIL_DESTINO nos Secrets."
         )
 
-    msg = MIMEText(corpo, "plain", "utf-8")
+    msg = MIMEText(corpo_html, "html", "utf-8")
     msg["Subject"] = assunto
     msg["From"] = EMAIL_REMETENTE
     msg["To"] = EMAIL_DESTINO
@@ -566,15 +676,17 @@ def main():
 
     resultados.sort(key=lambda x: x["score"], reverse=True)
 
-    fortes = [r for r in resultados if r["classificacao"] == "Compra forte"]
-
-    if not fortes:
-        print("Nenhum ativo com Compra forte hoje. E-mail não enviado.")
-        return
-
     corpo = montar_email(resultados)
-    assunto = "Radar Inteligente - Compra Forte"
+    assunto = "Radar Diário de Investimentos - Brasil e Globais"
 
-    print(corpo)
+    print("Resumo da execução:")
+    print(f"- Ativos analisados: {len(resultados)}")
+    print(f"- Compra forte: {len([r for r in resultados if r['classificacao'] == 'Compra forte'])}")
+    print("Enviando e-mail diário, independentemente de haver Compra Forte...")
+
     enviar_email(assunto, corpo)
     print("E-mail enviado com sucesso.")
+
+
+if __name__ == "__main__":
+    main()
